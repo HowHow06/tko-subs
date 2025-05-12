@@ -345,7 +345,9 @@ func scanDomain(domain DomainInput, cmsRecords []*CMS, config Configuration) ([]
 
 	scanResults := checkCnameAgainstProviders(domain.Domain, cname, cmsRecords, config)
 	if len(scanResults) == 0 {
-		// fmt.Printf("Cname [%s] is DNS is resolved and is skipped.\n", cname)
+		// scanResults is empty means that this CNAME has no provider match
+		// If there is a provider match, the column `Vulnerable` will be set to true or
+		// false based on whether the signature matches in its response
 		// err = errors.New(fmt.Sprintf("Cname [%s] found but could not determine provider", cname))
 	}
 	return scanResults, err
@@ -567,6 +569,7 @@ func evaluateDomainProvider(domain string, cname string, cmsRecord *CMS, client 
 	response, err := client.Get(protocol + scanResult.Domain)
 
 	if err != nil {
+		// TODO: might not be a vulnerability, but a network issue
 		scanResult.IsVulnerable = true
 		if strings.Contains(strings.ToLower(err.Error()), "Client.Timeout exceeded while awaiting headers") {
 			scanResult.Response = "Can't CURL it. err: Client.Timeout exceeded while awaiting headers"
