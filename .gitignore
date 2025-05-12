@@ -29,3 +29,4 @@ output.csv
 vendor/
 
 domains.csv
+unprocessed_domains.csv

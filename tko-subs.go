@@ -35,27 +35,33 @@ type CMS struct {
 }
 
 type DomainScan struct {
-	Domain      string
-	Content     string
-	Provider    string
-	IsInactive  bool
-	IsTakenOver bool
-	Response    string
+	Domain      string `csv:"domain"`
+	Content     string `csv:"content"`
+	Provider    string `csv:"provider"`
+	IsInactive  bool   `csv:"is_inactive"`
+	IsTakenOver bool   `csv:"is_taken_over"`
+	Response    string `csv:"response"`
+}
+
+type UnprocessedDomain struct {
+	Domain string `csv:"domain"`
+	Reason string `csv:"reason"`
 }
 
 type Configuration struct {
-	domainsFilePath *string
-	recordsFilePath *string
-	outputFilePath  *string
-	takeOver        *bool
-	githubtoken     *string
-	herokuusername  *string
-	herokuapikey    *string
-	herokuappname   *string
-	threadCount     *int
-	dnsServer       *string
-	dnsPort         *string
-	ignoreNsError   *bool
+	domainsFilePath     *string
+	recordsFilePath     *string
+	outputFilePath      *string
+	unprocessedFilePath *string
+	takeOver            *bool
+	githubtoken         *string
+	herokuusername      *string
+	herokuapikey        *string
+	herokuappname       *string
+	threadCount         *int
+	dnsServer           *string
+	dnsPort             *string
+	ignoreNsError       *bool
 }
 
 type DomainInput struct {
@@ -68,18 +74,19 @@ var dnsPort = "53"
 
 func main() {
 	config := Configuration{
-		domainsFilePath: flag.String("domains", "domains.csv", "CSV file containing list of domains and their contents"),
-		recordsFilePath: flag.String("data", "providers-data.csv", "CSV file containing CMS providers' string for identification"),
-		outputFilePath:  flag.String("output", "output.csv", "Output file to save the results"),
-		takeOver:        flag.Bool("takeover", false, "Flag to denote if a vulnerable domain needs to be taken over or not"),
-		githubtoken:     flag.String("githubtoken", "", "Github personal access token"),
-		herokuusername:  flag.String("herokuusername", "", "Heroku username"),
-		herokuapikey:    flag.String("herokuapikey", "", "Heroku API key"),
-		herokuappname:   flag.String("herokuappname", "", "Heroku app name"),
-		dnsServer:       flag.String("server", "8.8.8.8", "A DNS server to direct queries to"),
-		dnsPort:         flag.String("port", "53", "The DNS server port (you shouldn't have to change this)"),
-		threadCount:     flag.Int("threads", 5, "Number of threads to run parallel"),
-		ignoreNsError:   flag.Bool("ignoreNsError", true, "Flag to denote if to ignore NS check errors or not."),
+		domainsFilePath:     flag.String("domains", "domains.csv", "CSV file containing list of domains and their contents"),
+		recordsFilePath:     flag.String("data", "providers-data.csv", "CSV file containing CMS providers' string for identification"),
+		outputFilePath:      flag.String("output", "output.csv", "Output file to save the results"),
+		unprocessedFilePath: flag.String("unprocessed", "unprocessed_domains.csv", "Output file to save the unprocessed domains"),
+		takeOver:            flag.Bool("takeover", false, "Flag to denote if a vulnerable domain needs to be taken over or not"),
+		githubtoken:         flag.String("githubtoken", "", "Github personal access token"),
+		herokuusername:      flag.String("herokuusername", "", "Heroku username"),
+		herokuapikey:        flag.String("herokuapikey", "", "Heroku API key"),
+		herokuappname:       flag.String("herokuappname", "", "Heroku app name"),
+		dnsServer:           flag.String("server", "8.8.8.8", "A DNS server to direct queries to"),
+		dnsPort:             flag.String("port", "53", "The DNS server port (you shouldn't have to change this)"),
+		threadCount:         flag.Int("threads", 5, "Number of threads to run parallel"),
+		ignoreNsError:       flag.Bool("ignoreNsError", true, "Flag to denote if to ignore NS check errors or not."),
 	}
 	flag.Parse()
 	dnsServer = *config.dnsServer
@@ -87,6 +94,7 @@ func main() {
 
 	cmsRecords := loadProviders(*config.recordsFilePath)
 	var allResults []DomainScan
+	var unprocessedDomains []UnprocessedDomain
 
 	domainsFile, err := os.Open(*config.domainsFilePath)
 	showUsageOnError(err)
@@ -111,15 +119,18 @@ func main() {
 		go func(domainInput DomainInput) {
 			defer wg.Done()
 			scanResults, err := scanDomain(domainInput, cmsRecords, config)
+
+			mu.Lock()
 			if err == nil {
-				mu.Lock()
 				allResults = append(allResults, scanResults...)
-				mu.Unlock()
 			} else {
+				unprocessedDomains = append(unprocessedDomains, UnprocessedDomain{
+					Domain: domainInput.Domain,
+					Reason: err.Error(),
+				})
 				fmt.Printf("[%s] Domain problem : %s\n", domainInput.Domain, err)
 			}
 
-			mu.Lock()
 			processedDomains++
 			progress := float64(processedDomains) / float64(totalDomainsCount) * 100
 			fmt.Printf("%d/%d (%.2f%%)\n", processedDomains, totalDomainsCount, progress)
@@ -136,6 +147,11 @@ func main() {
 	if *config.outputFilePath != "" {
 		writeResultsToCsv(allResults, *config.outputFilePath)
 		Info("Results saved to: " + *config.outputFilePath)
+	}
+
+	if *config.unprocessedFilePath != "" && len(unprocessedDomains) > 0 {
+		writeUnprocessedDomainsToCsv(unprocessedDomains, *config.unprocessedFilePath)
+		Info("Unprocessed domains saved to: " + *config.unprocessedFilePath)
 	}
 }
 
@@ -156,6 +172,16 @@ func filterUniqueByProviderAndDomain(scans []DomainScan) []DomainScan {
 	}
 
 	return uniqueScans
+}
+
+// writeUnprocessedDomainsToCsv writes domains that couldn't be processed to a CSV file
+func writeUnprocessedDomainsToCsv(unprocessedDomains []UnprocessedDomain, outputFilePath string) {
+	outputFile, err := os.Create(outputFilePath)
+	panicOnError(err)
+	defer outputFile.Close()
+
+	err = gocsv.MarshalFile(&unprocessedDomains, outputFile)
+	panicOnError(err)
 }
 
 // panicOnError function as a generic check for error function
@@ -297,7 +323,7 @@ func scanDomain(domain DomainInput, cmsRecords []*CMS, config Configuration) ([]
 		scanResult := DomainScan{Domain: domain.Domain, IsInactive: true, IsTakenOver: false, Response: "REFUSED/SERVFAIL DNS status against its NS server"}
 		return []DomainScan{scanResult}, nil
 	} else if err != nil && !(*config.ignoreNsError) {
-		return nil, err
+		return nil, fmt.Errorf("nameserver check error: %v", err)
 	}
 
 	var content string
@@ -310,7 +336,7 @@ func scanDomain(domain DomainInput, cmsRecords []*CMS, config Configuration) ([]
 		// If content is not provided, call the getCnameForDomain function
 		content, err = getCnameForDomain(domain.Domain)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("CNAME lookup error: %v", err)
 		}
 	}
 
@@ -324,7 +350,7 @@ func scanDomain(domain DomainInput, cmsRecords []*CMS, config Configuration) ([]
 		scanResult := DomainScan{Domain: domain.Domain, Content: content, IsInactive: true, IsTakenOver: false, Response: response}
 		return []DomainScan{scanResult}, nil
 	} else if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("apex DNS lookup error: %v", err)
 	}
 
 	// Check if it is pointing to a CONTENT that doesn't exist
@@ -343,12 +369,10 @@ func scanDomain(domain DomainInput, cmsRecords []*CMS, config Configuration) ([]
 
 	scanResults := checkContentAgainstProviders(domain.Domain, content, cmsRecords, config)
 	if len(scanResults) == 0 {
-		// scanResults is empty means that this CONTENT has no provider match
-		// If there is a provider match, the column `Vulnerable` will be set to true or
-		// false based on whether the signature matches in its response
-		// err = errors.New(fmt.Sprintf("Content [%s] found but could not determine provider", content))
+		// No provider match found for this content
+		return nil, fmt.Errorf("content [%s] found but could not determine provider", content)
 	}
-	return scanResults, err
+	return scanResults, nil
 }
 
 // apexResolves function returns false if the domain's apex returns NXDOMAIN OR SERVFAIL OR REFUSED, and true otherwise
