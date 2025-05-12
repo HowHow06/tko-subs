@@ -1,13 +1,12 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -53,10 +52,15 @@ type Configuration struct {
 	herokuusername  *string
 	herokuapikey    *string
 	herokuappname   *string
-	domain          *string
 	threadCount     *int
 	dnsServer       *string
 	dnsPort         *string
+	skipNsCheck     *bool
+}
+
+type DomainInput struct {
+	Domain  string `csv:"domain"`
+	Content string `csv:"content"`
 }
 
 var dnsServer = "8.8.8.8"
@@ -64,7 +68,7 @@ var dnsPort = "53"
 
 func main() {
 	config := Configuration{
-		domainsFilePath: flag.String("domains", "domains.txt", "List of domains to check"),
+		domainsFilePath: flag.String("domains", "domains.csv", "CSV file containing list of domains and their CNAMEs"),
 		recordsFilePath: flag.String("data", "providers-data.csv", "CSV file containing CMS providers' string for identification"),
 		outputFilePath:  flag.String("output", "output.csv", "Output file to save the results"),
 		takeOver:        flag.Bool("takeover", false, "Flag to denote if a vulnerable domain needs to be taken over or not"),
@@ -72,11 +76,11 @@ func main() {
 		herokuusername:  flag.String("herokuusername", "", "Heroku username"),
 		herokuapikey:    flag.String("herokuapikey", "", "Heroku API key"),
 		herokuappname:   flag.String("herokuappname", "", "Heroku app name"),
-		domain:          flag.String("domain", "", "Domains separated by ,"),
 		dnsServer:       flag.String("server", "8.8.8.8", "A DNS server to direct queries to"),
 		dnsPort:         flag.String("port", "53", "The DNS server port (you shouldn't have to change this)"),
-
-		threadCount: flag.Int("threads", 5, "Number of threads to run parallel")}
+		threadCount:     flag.Int("threads", 5, "Number of threads to run parallel"),
+		skipNsCheck:     flag.Bool("skipnscheck", false, "Flag to denote if to skip the NS server status."),
+	}
 	flag.Parse()
 	dnsServer = *config.dnsServer
 	dnsPort = *config.dnsPort
@@ -84,43 +88,49 @@ func main() {
 	cmsRecords := loadProviders(*config.recordsFilePath)
 	var allResults []DomainScan
 
-	if *config.domain != "" {
-		for _, domain := range strings.Split(*config.domain, ",") {
-			scanResults, err := scanDomain(domain, cmsRecords, config)
-			if err == nil {
-				allResults = append(allResults, scanResults...)
-			} else {
-				fmt.Printf("[%s] Domain problem : %s\n", domain, err)
-			}
-		}
-	} else {
-		domainsFile, err := os.Open(*config.domainsFilePath)
+	domainsFile, err := os.Open(*config.domainsFilePath)
+	showUsageOnError(err)
+	defer domainsFile.Close()
+
+	var domains []DomainInput
+	if err := gocsv.UnmarshalFile(domainsFile, &domains); err != nil {
 		showUsageOnError(err)
-		defer domainsFile.Close()
-		domainsScanner := bufio.NewScanner(domainsFile)
-
-		//Create an exec-queue with fixed size for parallel threads, it will block until new element can be added
-		//Use this with a waitgroup to wait for threads which will be still executing after we have no elements to add to the queue
-		semaphore := make(chan bool, *config.threadCount)
-		var wg sync.WaitGroup
-
-		for domainsScanner.Scan() {
-			wg.Add(1)
-			semaphore <- true
-			go func(domain string) {
-				scanResults, err := scanDomain(domain, cmsRecords, config)
-				if err == nil {
-					allResults = append(allResults, scanResults...)
-				} else {
-					fmt.Printf("[%s] Domain problem : %s\n", domain, err)
-				}
-				<-semaphore
-				wg.Done()
-			}(domainsScanner.Text())
-		}
-		wg.Wait()
 	}
 
+	totalDomainsCount := len(domains)
+	processedDomains := 0
+
+	// Create an exec-queue with fixed size for parallel threads
+	semaphore := make(chan bool, *config.threadCount)
+	var wg sync.WaitGroup
+	var mu sync.Mutex // For safe increment of processedDomains
+
+	for _, domainInput := range domains {
+		wg.Add(1)
+		semaphore <- true
+		go func(domainInput DomainInput) {
+			defer wg.Done()
+			scanResults, err := scanDomain(domainInput, cmsRecords, config)
+			if err == nil {
+				mu.Lock()
+				allResults = append(allResults, scanResults...)
+				mu.Unlock()
+			} else {
+				fmt.Printf("[%s] Domain problem : %s\n", domainInput.Domain, err)
+			}
+
+			mu.Lock()
+			processedDomains++
+			progress := float64(processedDomains) / float64(totalDomainsCount) * 100
+			fmt.Printf("%d/%d (%.2f%%)\n", processedDomains, totalDomainsCount, progress)
+			mu.Unlock()
+
+			<-semaphore
+		}(domainInput)
+	}
+	wg.Wait()
+
+	allResults = filterUniqueByProviderAndDomain(allResults)
 	printResults(allResults)
 
 	if *config.outputFilePath != "" {
@@ -129,14 +139,33 @@ func main() {
 	}
 }
 
-//panicOnError function as a generic check for error function
+func filterUniqueByProviderAndDomain(scans []DomainScan) []DomainScan {
+	// Map to track the presence of provider and domain combinations
+	seen := make(map[string]bool)
+	uniqueScans := []DomainScan{}
+
+	for _, scan := range scans {
+		// Create a unique key by combining Provider and Domain
+		key := scan.Provider + "_" + scan.Domain
+
+		// If the combination of provider and domain has not been seen, add it to the result slice
+		if !seen[key] {
+			uniqueScans = append(uniqueScans, scan)
+			seen[key] = true
+		}
+	}
+
+	return uniqueScans
+}
+
+// panicOnError function as a generic check for error function
 func panicOnError(e error) {
 	if e != nil {
 		panic(e)
 	}
 }
 
-//showUsageOnError function as a generic check for error when panic is too aggressive
+// showUsageOnError function as a generic check for error when panic is too aggressive
 func showUsageOnError(e error) {
 	if e != nil {
 		fmt.Printf("Error: %s\n", e)
@@ -145,7 +174,7 @@ func showUsageOnError(e error) {
 	}
 }
 
-//Info function to print pretty output
+// Info function to print pretty output
 func Info(format string, args ...interface{}) {
 	fmt.Printf("\x1b[34;1m%s\x1b[0m\n", fmt.Sprintf(format, args...))
 }
@@ -155,7 +184,7 @@ func unFqdn(domain string) string {
 	return strings.TrimSuffix(domain, ".")
 }
 
-//takeOverSub function to decide what to do depending upon the CMS
+// takeOverSub function to decide what to do depending upon the CMS
 func takeOverSub(domain string, provider string, config Configuration) (bool, error) {
 	switch provider {
 	case "github":
@@ -166,8 +195,8 @@ func takeOverSub(domain string, provider string, config Configuration) (bool, er
 	return false, nil
 }
 
-//githubCreate function to take over dangling Github Pages
-//Connecting to your Github account using the Personal Access Token
+// githubCreate function to take over dangling Github Pages
+// Connecting to your Github account using the Personal Access Token
 func githubCreate(domain string, config Configuration) (bool, error) {
 	ctx := context.Background()
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: *config.githubtoken})
@@ -249,10 +278,10 @@ func githubCreate(domain string, config Configuration) (bool, error) {
 	return true, nil
 }
 
-//herokuCreate function to take over dangling Heroku apps
-//Connecting to your Heroku account using the username and the API key provided as flags
-//Adding the dangling domain as a custom domain for your appname that is retrieved from the flag
-//This results in the dangling domain pointing to your Heroku appname
+// herokuCreate function to take over dangling Heroku apps
+// Connecting to your Heroku account using the username and the API key provided as flags
+// Adding the dangling domain as a custom domain for your appname that is retrieved from the flag
+// This results in the dangling domain pointing to your Heroku appname
 func herokuCreate(domain string, config Configuration) (bool, error) {
 	client := heroku.Client{Username: *config.herokuusername, Password: *config.herokuapikey}
 	client.DomainCreate(*config.herokuappname, domain)
@@ -261,60 +290,103 @@ func herokuCreate(domain string, config Configuration) (bool, error) {
 	return true, nil
 }
 
-//scanDomain function to scan for each domain being read from the domains file
-func scanDomain(domain string, cmsRecords []*CMS, config Configuration) ([]DomainScan, error) {
+// scanDomain function to scan for each domain being read from the domains file
+func scanDomain(domain DomainInput, cmsRecords []*CMS, config Configuration) ([]DomainScan, error) {
 	// Check if the domain has a nameserver that returns servfail/refused
-	if misbehavingNs, err := authorityReturnRefusedOrServfail(domain); misbehavingNs {
-		scanResult := DomainScan{Domain: domain, IsVulnerable: true, IsTakenOver: false, Response: "REFUSED/SERVFAIL DNS status"}
-		return []DomainScan{scanResult}, nil
-	} else if err != nil {
-		return nil, err
+	if !(*config.skipNsCheck) {
+		if misbehavingNs, err := authorityReturnRefusedOrServfail(domain.Domain); misbehavingNs {
+			scanResult := DomainScan{Domain: domain.Domain, IsVulnerable: true, IsTakenOver: false, Response: "REFUSED/SERVFAIL DNS status"}
+			return []DomainScan{scanResult}, nil
+		} else if err != nil {
+			return nil, err
+		}
 	}
 
-	cname, err := getCnameForDomain(domain)
-	if err != nil {
+	var cname string
+	var err error
+
+	// Check if CNAME is provided in the domain
+	if domain.Content != "" {
+		cname = domain.Content
+	} else {
+		// If CNAME is not provided, call the getCnameForDomain function
+		cname, err = getCnameForDomain(domain.Domain)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Check if the domain has a dead Apex DNS record, as in it's pointing to a CNAME that doesn't exist
+	exists, status, err := apexResolves(cname)
+	if !exists {
+		response := "Dead Apex DNS record"
+		if status != "" {
+			response += ". Status " + status
+		}
+		scanResult := DomainScan{Domain: domain.Domain, Cname: cname, IsVulnerable: true, IsTakenOver: false, Response: response}
+		return []DomainScan{scanResult}, nil
+	} else if err != nil {
 		return nil, err
 	}
 
 	// Check if the domain has a dead DNS record, as in it's pointing to a CNAME that doesn't exist
-	if exists, err := apexResolves(cname); !exists {
-		scanResult := DomainScan{Domain: domain, Cname: cname, IsVulnerable: true, IsTakenOver: false, Response: "Dead DNS record"}
+	exists, status, err = resolves(unFqdn(cname))
+	if err != nil {
+		scanResult := DomainScan{Domain: domain.Domain, Cname: cname, IsVulnerable: true, IsTakenOver: false, Response: "Error when resolving DNS Content, require manual check"}
 		return []DomainScan{scanResult}, nil
-	} else if err != nil {
-		return nil, err
+	} else if !exists {
+		response := "Dead DNS record OR Interesting Status"
+		if status != "" {
+			response += ". Status " + status
+		}
+		scanResult := DomainScan{Domain: domain.Domain, Cname: cname, IsVulnerable: true, IsTakenOver: false, Response: response}
+		return []DomainScan{scanResult}, nil
 	}
 
-	scanResults := checkCnameAgainstProviders(domain, cname, cmsRecords, config)
+	scanResults := checkCnameAgainstProviders(domain.Domain, cname, cmsRecords, config)
 	if len(scanResults) == 0 {
-		err = errors.New(fmt.Sprintf("Cname [%s] found but could not determine provider", cname))
+		// fmt.Printf("Cname [%s] is DNS is resolved and is skipped.\n", cname)
+		// err = errors.New(fmt.Sprintf("Cname [%s] found but could not determine provider", cname))
 	}
 	return scanResults, err
 }
 
-// apexResolves function returns false if the domain's apex returns NXDOMAIN, and true otherwise
-func apexResolves(domain string) (bool, error) {
+// apexResolves function returns false if the domain's apex returns NXDOMAIN OR SERVFAIL OR REFUSED, and true otherwise
+// Now also returns the specific status message when apexResolves is false
+func apexResolves(domain string) (bool, string, error) {
 	apex, err := publicsuffix.EffectiveTLDPlusOne(unFqdn(domain))
-	exists, err := resolves(apex)
+	exists, status, err := resolves(apex)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
-	return exists, nil
+	return exists, status, nil
 }
 
-// resolves function returns false if NXDOMAIN, and true otherwise
-func resolves(domain string) (bool, error) {
+// resolves function returns false if NXDOMAIN OR SERVFAIL OR REFUSED, and true otherwise
+func resolves(domain string) (bool, string, error) {
 	client := dns.Client{}
 	message := dns.Msg{}
 
 	message.SetQuestion(dns.Fqdn(domain), dns.TypeA)
 	r, _, err := client.Exchange(&message, dnsServer+":"+dnsPort)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
-	if r.Rcode == dns.RcodeNameError {
-		return false, nil
+
+	var status string
+	switch r.Rcode {
+	case dns.RcodeNameError:
+		status = "NXDOMAIN"
+	case dns.RcodeServerFailure:
+		status = "SERVFAIL"
+	case dns.RcodeRefused:
+		status = "REFUSED"
 	}
-	return true, nil
+
+	if r.Rcode == dns.RcodeNameError || r.Rcode == dns.RcodeServerFailure || r.Rcode == dns.RcodeRefused {
+		return false, status, nil
+	}
+	return true, "", nil
 }
 
 // getCnameForDomain function to lookup the last CNAME record of a domain
@@ -452,17 +524,17 @@ func nameserverReturnsRefusedOrServfail(domain string, nameserver string) (bool,
 	return false, nil
 }
 
-//Now, for each entry in the data providers file, we will check to see if the output
-//from the dig command against the current domain matches the CNAME for that data provider
-//if it matches the CNAME, we need to now check if it matches the string for that data provider
-//So, we curl it and see if it matches. At this point, we know its vulnerable
+// Now, for each entry in the data providers file, we will check to see if the output
+// from the dig command against the current domain matches the CNAME for that data provider
+// if it matches the CNAME, we need to now check if it matches the string for that data provider
+// So, we curl it and see if it matches. At this point, we know its vulnerable
 func checkCnameAgainstProviders(domain string, cname string, cmsRecords []*CMS, config Configuration) []DomainScan {
 	transport := &http.Transport{
 		Dial:                (&net.Dialer{Timeout: 10 * time.Second}).Dial,
 		TLSHandshakeTimeout: 10 * time.Second,
 		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true}}
 
-	client := &http.Client{Transport: transport, Timeout: time.Duration(10 * time.Second)}
+	client := &http.Client{Transport: transport, Timeout: time.Duration(20 * time.Second)}
 	var scanResults []DomainScan
 
 	for _, cmsRecord := range cmsRecords {
@@ -482,9 +554,9 @@ func checkCnameAgainstProviders(domain string, cname string, cmsRecords []*CMS, 
 	return scanResults
 }
 
-//If there is a CNAME and can't curl it, we will assume its vulnerable
-//If we can curl it, we will regex match the string obtained in the response with
-//the string specified in the data providers file to see if its vulnerable or not
+// If there is a CNAME and can't curl it, we will assume its vulnerable
+// If we can curl it, we will regex match the string obtained in the response with
+// the string specified in the data providers file to see if its vulnerable or not
 func evaluateDomainProvider(domain string, cname string, cmsRecord *CMS, client *http.Client) DomainScan {
 	scanResult := DomainScan{Domain: domain, Cname: cname,
 		IsTakenOver: false, IsVulnerable: false, Provider: cmsRecord.Name}
@@ -496,9 +568,19 @@ func evaluateDomainProvider(domain string, cname string, cmsRecord *CMS, client 
 
 	if err != nil {
 		scanResult.IsVulnerable = true
-		scanResult.Response = "Can't CURL it but dig shows a dead DNS record"
-	} else if err == nil {
-		text, err := ioutil.ReadAll(response.Body)
+		if strings.Contains(strings.ToLower(err.Error()), "Client.Timeout exceeded while awaiting headers") {
+			scanResult.Response = "Can't CURL it. err: Client.Timeout exceeded while awaiting headers"
+		} else if strings.Contains(strings.ToLower(err.Error()), "timeout") {
+			scanResult.Response = "Can't CURL it. err: timeout"
+		} else if strings.Contains(strings.ToLower(err.Error()), "no such host") {
+			scanResult.Response = "Can't CURL it. err: no such host"
+		} else if strings.Contains(strings.ToLower(err.Error()), "tls handshake failure") {
+			scanResult.Response = "Can't CURL it. err: tls handshake failure"
+		} else {
+			scanResult.Response = fmt.Sprintf("Can't CURL it. err: %v", err)
+		}
+	} else {
+		text, err := io.ReadAll(response.Body)
 		if err != nil {
 			scanResult.Response = err.Error()
 		} else {
@@ -535,7 +617,7 @@ func writeResultsToCsv(scanResults []DomainScan, outputFilePath string) {
 
 func printResults(scanResults []DomainScan) {
 	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"Domain", "Cname", "Provider", "Vulnerable", "Taken Over", "Response"})
+	table.Header([]string{"Domain", "Cname", "Provider", "Vulnerable", "Taken Over", "Response"})
 
 	for _, scanResult := range scanResults {
 		if (len(scanResult.Cname) > 0 && len(scanResult.Provider) > 0) || len(scanResult.Response) > 0 {
