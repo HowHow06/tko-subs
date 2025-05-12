@@ -8,6 +8,15 @@
 
 You can download the binary directly from the [releases page](https://github.com/howhow06/tko-subs/releases) rather than building from source.
 
+### Required Files
+
+Before running the tool, ensure you have these two files in the same directory as the binary:
+
+1. `domains.csv` - Contains the domains to check (follow the format shown below)
+2. `providers-data.csv` - Contains provider information for vulnerability checking
+
+If either file is missing, the tool will not function properly. Example files are included in the repository.
+
 ### New Usage with CSV Format
 
 This fork has been modified to accept a CSV file instead of a simple domains.txt file:
