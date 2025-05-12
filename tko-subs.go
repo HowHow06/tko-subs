@@ -567,7 +567,6 @@ func evaluateDomainProvider(domain string, cname string, cmsRecord *CMS, client 
 	response, err := client.Get(protocol + scanResult.Domain)
 
 	if err != nil {
-		// TODO: might not be a vulnerability, but a network issue
 		scanResult.IsInactive = true
 		if strings.Contains(strings.ToLower(err.Error()), "Client.Timeout exceeded while awaiting headers") {
 			scanResult.Response = "Can't CURL it. err: Client.Timeout exceeded while awaiting headers"
