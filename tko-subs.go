@@ -29,14 +29,14 @@ import (
 
 type CMS struct {
 	Name     string `csv:"name"`
-	CName    string `csv:"cname"`
+	Content  string `csv:"content"`
 	String   string `csv:"string"`
 	OverHTTP string `csv:"http"`
 }
 
 type DomainScan struct {
 	Domain      string
-	Cname       string
+	Content     string
 	Provider    string
 	IsInactive  bool
 	IsTakenOver bool
@@ -68,7 +68,7 @@ var dnsPort = "53"
 
 func main() {
 	config := Configuration{
-		domainsFilePath: flag.String("domains", "domains.csv", "CSV file containing list of domains and their CNAMEs"),
+		domainsFilePath: flag.String("domains", "domains.csv", "CSV file containing list of domains and their contents"),
 		recordsFilePath: flag.String("data", "providers-data.csv", "CSV file containing CMS providers' string for identification"),
 		outputFilePath:  flag.String("output", "output.csv", "Output file to save the results"),
 		takeOver:        flag.Bool("takeover", false, "Flag to denote if a vulnerable domain needs to be taken over or not"),
@@ -303,11 +303,11 @@ func scanDomain(domain DomainInput, cmsRecords []*CMS, config Configuration) ([]
 	var content string
 	var err error
 
-	// Check if CNAME is provided in the domain
+	// Check if CONTENT is provided in the domain
 	if domain.Content != "" {
 		content = domain.Content
 	} else {
-		// If CNAME is not provided, call the getCnameForDomain function
+		// If content is not provided, call the getCnameForDomain function
 		content, err = getCnameForDomain(domain.Domain)
 		if err != nil {
 			return nil, err
@@ -321,32 +321,32 @@ func scanDomain(domain DomainInput, cmsRecords []*CMS, config Configuration) ([]
 		if status != "" {
 			response += ". Status " + status
 		}
-		scanResult := DomainScan{Domain: domain.Domain, Cname: content, IsInactive: true, IsTakenOver: false, Response: response}
+		scanResult := DomainScan{Domain: domain.Domain, Content: content, IsInactive: true, IsTakenOver: false, Response: response}
 		return []DomainScan{scanResult}, nil
 	} else if err != nil {
 		return nil, err
 	}
 
-	// Check if it is pointing to a CNAME that doesn't exist
+	// Check if it is pointing to a CONTENT that doesn't exist
 	exists, status, err = resolves(unFqdn(content))
 	if err != nil {
-		scanResult := DomainScan{Domain: domain.Domain, Cname: content, IsInactive: true, IsTakenOver: false, Response: "Error when resolving DNS Content, require manual check"}
+		scanResult := DomainScan{Domain: domain.Domain, Content: content, IsInactive: true, IsTakenOver: false, Response: "Error when resolving DNS Content, require manual check"}
 		return []DomainScan{scanResult}, nil
 	} else if !exists {
 		response := "Potential Dead DNS record"
 		if status != "" {
 			response += ". Status " + status
 		}
-		scanResult := DomainScan{Domain: domain.Domain, Cname: content, IsInactive: true, IsTakenOver: false, Response: response}
+		scanResult := DomainScan{Domain: domain.Domain, Content: content, IsInactive: true, IsTakenOver: false, Response: response}
 		return []DomainScan{scanResult}, nil
 	}
 
-	scanResults := checkCnameAgainstProviders(domain.Domain, content, cmsRecords, config)
+	scanResults := checkContentAgainstProviders(domain.Domain, content, cmsRecords, config)
 	if len(scanResults) == 0 {
-		// scanResults is empty means that this CNAME has no provider match
+		// scanResults is empty means that this CONTENT has no provider match
 		// If there is a provider match, the column `Vulnerable` will be set to true or
 		// false based on whether the signature matches in its response
-		// err = errors.New(fmt.Sprintf("Cname [%s] found but could not determine provider", cname))
+		// err = errors.New(fmt.Sprintf("Content [%s] found but could not determine provider", content))
 	}
 	return scanResults, err
 }
@@ -525,10 +525,10 @@ func nameserverReturnsRefusedOrServfail(domain string, nameserver string) (bool,
 }
 
 // Now, for each entry in the data providers file, we will check to see if the output
-// from the dig command against the current domain matches the CNAME for that data provider
-// if it matches the CNAME, we need to now check if it matches the string for that data provider
+// from the dig command against the current domain matches the CONTENT for that data provider
+// if it matches the CONTENT, we need to now check if it matches the string for that data provider
 // So, we curl it and see if it matches. At this point, we know its vulnerable
-func checkCnameAgainstProviders(domain string, cname string, cmsRecords []*CMS, config Configuration) []DomainScan {
+func checkContentAgainstProviders(domain string, content string, cmsRecords []*CMS, config Configuration) []DomainScan {
 	transport := &http.Transport{
 		Dial:                (&net.Dialer{Timeout: 10 * time.Second}).Dial,
 		TLSHandshakeTimeout: 10 * time.Second,
@@ -538,9 +538,10 @@ func checkCnameAgainstProviders(domain string, cname string, cmsRecords []*CMS, 
 	var scanResults []DomainScan
 
 	for _, cmsRecord := range cmsRecords {
-		usesprovider, _ := regexp.MatchString(cmsRecord.CName, cname)
-		if usesprovider {
-			scanResult := evaluateDomainProvider(domain, cname, cmsRecord, client)
+		isWildcardProvider := strings.Contains(cmsRecord.Content, "*")
+		usesprovider, _ := regexp.MatchString(cmsRecord.Content, content)
+		if isWildcardProvider || usesprovider {
+			scanResult := evaluateDomainProvider(domain, content, cmsRecord, client)
 			if *config.takeOver && scanResult.IsInactive {
 				isTakenOver, err := takeOverSub(scanResult.Domain, scanResult.Provider, config)
 				if err != nil {
@@ -549,16 +550,19 @@ func checkCnameAgainstProviders(domain string, cname string, cmsRecords []*CMS, 
 				scanResult.IsTakenOver = isTakenOver
 			}
 			scanResults = append(scanResults, scanResult)
+			if scanResult.IsInactive {
+				break
+			}
 		}
 	}
 	return scanResults
 }
 
-// If there is a CNAME and can't curl it, we will assume its vulnerable
+// If there is a content and can't curl it, we will assume its vulnerable
 // If we can curl it, we will regex match the string obtained in the response with
 // the string specified in the data providers file to see if its vulnerable or not
-func evaluateDomainProvider(domain string, cname string, cmsRecord *CMS, client *http.Client) DomainScan {
-	scanResult := DomainScan{Domain: domain, Cname: cname,
+func evaluateDomainProvider(domain string, content string, cmsRecord *CMS, client *http.Client) DomainScan {
+	scanResult := DomainScan{Domain: domain, Content: content,
 		IsTakenOver: false, IsInactive: false, Provider: cmsRecord.Name}
 	protocol := "https://"
 	if cmsRecord.OverHTTP == "true" {
@@ -617,11 +621,11 @@ func writeResultsToCsv(scanResults []DomainScan, outputFilePath string) {
 
 func printResults(scanResults []DomainScan) {
 	table := tablewriter.NewWriter(os.Stdout)
-	table.Header([]string{"Domain", "Cname", "Provider", "Is Inactive", "Taken Over", "Response"})
+	table.Header([]string{"Domain", "Content", "Provider", "Is Inactive", "Taken Over", "Response"})
 
 	for _, scanResult := range scanResults {
-		if (len(scanResult.Cname) > 0 && len(scanResult.Provider) > 0) || len(scanResult.Response) > 0 {
-			table.Append([]string{scanResult.Domain, scanResult.Cname, scanResult.Provider,
+		if (len(scanResult.Content) > 0 && len(scanResult.Provider) > 0) || len(scanResult.Response) > 0 {
+			table.Append([]string{scanResult.Domain, scanResult.Content, scanResult.Provider,
 				strconv.FormatBool(scanResult.IsInactive),
 				strconv.FormatBool(scanResult.IsTakenOver),
 				scanResult.Response})
