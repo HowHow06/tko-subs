@@ -295,7 +295,7 @@ func scanDomain(domain DomainInput, cmsRecords []*CMS, config Configuration) ([]
 	// Check if the domain has a nameserver that returns servfail/refused
 	if !(*config.skipNsCheck) {
 		if misbehavingNs, err := authorityReturnRefusedOrServfail(domain.Domain); misbehavingNs {
-			scanResult := DomainScan{Domain: domain.Domain, IsVulnerable: true, IsTakenOver: false, Response: "REFUSED/SERVFAIL DNS status"}
+			scanResult := DomainScan{Domain: domain.Domain, IsVulnerable: true, IsTakenOver: false, Response: "REFUSED/SERVFAIL DNS status against its NS server"}
 			return []DomainScan{scanResult}, nil
 		} else if err != nil {
 			return nil, err
