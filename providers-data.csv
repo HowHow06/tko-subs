@@ -1,4 +1,4 @@
-name,cname,string,http
+name,content,string,http
 github,github,There isn't a GitHub Pages site here.,false
 github,github,For root URLs (like http://example.com/) you must provide an index.html file,false
 heroku,heroku,There's nothing here,true
@@ -11,8 +11,6 @@ instapage,pageserve.co,You've Discovered A Missing Link. Our Apologies!,false
 tictail,tictail.com,Building a brand of your own?,true
 campaignmonitor,createsend.com,Trying to access your account?,false
 cargocollective,cargocollective.com,404 Not Found,false
-amazonaws,amazonaws.com,NoSuchBucket,false
-amazonaws,amazonaws.com,The specified bucket does not exist,false
 smartling,smartling.com,Domain is not configured,false
 acquia,acquia.com,If you are an Acquia Cloud customer and expect to see your site at this address,false
 fastly,fastly.net,Please check that this domain has been added to a service,false
@@ -43,3 +41,13 @@ fly,fly.io,404 Not Found,false
 hatenablog,hatenablog.com,404 Blog is not found,false
 mashery,mashery.com,Unrecognized domain,false
 tilda,tilda.cc,Please renew your subscription,false
+[HTTPS] AWS S3,(?i)(\.s3|s3-website),NoSuchBucket,false
+[HTTPS] AWS S3,(?i)(\.s3|s3-website),The specified bucket does not exist,false
+[HTTP] AWS S3,(?i)(\.s3|s3-website),NoSuchBucket,true
+[HTTP] AWS S3,(?i)(\.s3|s3-website),The specified bucket does not exist,true
+[HTTPS] AWS Cloudfront,(?i)(\.cloudfront\.),The request could not be satisfied,false
+[HTTPS] AWS Cloudfront,(?i)(\.cloudfront\.),ViewerCertificateException,false
+[HTTP] AWS Cloudfront,(?i)(\.cloudfront\.),The request could not be satisfied,true
+[HTTP] AWS Cloudfront,(?i)(\.cloudfront\.),ViewerCertificateException,true
+[HTTP] WP Engine,*,This domain is successfully pointed at WP Engine,true
+[HTTPS] WP Engine,*,This domain is successfully pointed at WP Engine,false
