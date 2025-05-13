@@ -49,5 +49,7 @@ tilda,tilda.cc,Please renew your subscription,false
 [HTTPS] AWS Cloudfront,(?i)(\.cloudfront\.),ViewerCertificateException,false
 [HTTP] AWS Cloudfront,(?i)(\.cloudfront\.),The request could not be satisfied,true
 [HTTP] AWS Cloudfront,(?i)(\.cloudfront\.),ViewerCertificateException,true
-[HTTP] WP Engine,*,This domain is successfully pointed at WP Engine,true
-[HTTPS] WP Engine,*,This domain is successfully pointed at WP Engine,false
+[HTTP] WP Engine,(?i)(\.wpengine\.com),This domain is successfully pointed at WP Engine,true
+[HTTPS] WP Engine,(?i)(\.wpengine\.com),This domain is successfully pointed at WP Engine,false
+[HTTP] WP Engine,"(?:[0-9]{1,3}\.){3}[0-9]{1,3}",This domain is successfully pointed at WP Engine,true
+[HTTPS] WP Engine,"(?:[0-9]{1,3}\.){3}[0-9]{1,3}",This domain is successfully pointed at WP Engine,false

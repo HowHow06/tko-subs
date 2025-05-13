@@ -354,7 +354,8 @@ func scanDomain(domain DomainInput, cmsRecords []*CMS, config Configuration) ([]
 	}
 
 	// Check if it is pointing to a CONTENT that doesn't exist
-	exists, status, err = resolves(unFqdn(content))
+	// exists, status, err = resolves(unFqdn(content))
+	exists, status, err = resolves(unFqdn(domain.Domain))
 	if err != nil {
 		scanResult := DomainScan{Domain: domain.Domain, Content: content, IsInactive: true, IsTakenOver: false, Response: "Error when resolving DNS Content, require manual check"}
 		return []DomainScan{scanResult}, nil
