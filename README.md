@@ -4,6 +4,85 @@
 
 ## Updated Usage Instructions
 
+### Flow Overview
+
+<details>
+  <summary>Plantuml of the flow</summary>
+
+```
+@startuml
+start
+
+:Load subdomains from CSV;
+
+:For each subdomain;
+
+partition "Authoritative Name Server Check" {
+  :Resolve the subdomain against its authoritative name servers;
+  note right
+  Equivalent:
+  `dig a <subdomain> @<authoritative nameserver>`
+  end note
+
+  if (Response is REFUSED or SERVFAIL?) then (Yes)
+    :Flag as REFUSED/SERVFAIL;
+    stop
+  else (No)
+  endif
+}
+
+partition "Apex DNS Resolve" {
+  :Resolve the subdomain's apex against public nameserver;
+  note right
+  Apex is the effective top level domain plus one more label.
+  For example, apex for "foo.bar.golang.org" is "golang.org".
+  Equivalent:
+  `dig a <subdomain apex> @<public nameserver>`
+  end note
+  if (Response is NXDOMAIN, REFUSED, or SERVFAIL?) then (Yes)
+    :Flag as Dead Apex DNS record;
+    stop
+  else (No)
+  endif
+}
+
+partition "Subdomain DNS Resolve" {
+  :Resolve the subdomain against public nameserver;
+  note right
+  Equivalent:
+  `dig a <subdomain> @<public nameserver>`
+  end note
+  if (Response is NXDOMAIN, REFUSED, or SERVFAIL?) then (Yes)
+    :Flag as Potential Dead DNS record;
+    stop
+  else (No)
+  endif
+}
+
+partition "Signature Check" {
+  :Check subdomain response against provider signature;
+  if (Curl error?) then (Yes)
+    :Flag as inactive;
+  else (No)
+    :Check if response matches provider signature;
+    if (Signature matched?) then (Yes)
+      :Flag as inactive (Signature matched);
+    else (No)
+      :Domain is active;
+    endif
+  endif
+}
+
+:Output results to CSV;
+:Output errors to CSV;
+
+stop
+```
+
+</details>
+
+[![plantuml](https://img.plantuml.biz/plantuml/svg/lLJBQjj05DthAoxUr0QZxksGnlW1WTGf5WtjBcFfIXewcglEmmHA_xrN8qj-fS7feZ2BUTrppZrdc3lhX76-Kb6OHD7aWKG6rcypgeJK5d935SoJfocVhSW0YhGydFDkpNNIIT8mc7bNaf5EEBb3M8iA8K6pGmFp4jCV0_WL0KmsQ4dnkIln00IYQEWSI6T1dE3e1iS673jb04qEmSYYTBnO_lHo9nHgDm5UFcUo004tFUujtDrSmhLejyzSWJeBY3pb8NCOihwQj4MG5ZRBrTTakG1kF5bkdbQp-uTFeqQvXk5tj2CkuOvMIZ1hV_jZTtKQZgsZkY5I33bSqwWbbNdq-zIy6bzWiKvWxyzRRdrWZvhhdMcrtogP7hLsuLD0vuOQ6CnpJ8CNh0mKxb31FeLQUGka4Ieo24fiKSLS7O9_4LMjSDmovxmpo8dYhJ1nGKhe8YPJ31gEmT4wlYAZWDW4TT76UKBdyQo_BHu_p-xNuyxwyPL9BP1VUU-umPHCzgwqabxybP6z8wjhtlJ_i-eBusadXMfD-rU_PA65y_oeZh-2C3_oo7I2UxCCxMJ67uZjwgVxtkRUA41ZoBoXNMeH7lhqJ65FpKWzPoLSMgBz2sVBUcYZlPrTahz2_qhTgCKy5SMbYzO83koWl7FqoDd9etUrTuruh_Z7TDJ-qTr-CEQm7JKf_G40)](https://editor.plantuml.com/uml/lLJBQjj05DthAoxUr0QZxksGnlW1WTGf5WtjBcFfIXewcglEmmHA_xrN8qj-fS7feZ2BUTrppZrdc3lhX76-Kb6OHD7aWKG6rcypgeJK5d935SoJfocVhSW0YhGydFDkpNNIIT8mc7bNaf5EEBb3M8iA8K6pGmFp4jCV0_WL0KmsQ4dnkIln00IYQEWSI6T1dE3e1iS673jb04qEmSYYTBnO_lHo9nHgDm5UFcUo004tFUujtDrSmhLejyzSWJeBY3pb8NCOihwQj4MG5ZRBrTTakG1kF5bkdbQp-uTFeqQvXk5tj2CkuOvMIZ1hV_jZTtKQZgsZkY5I33bSqwWbbNdq-zIy6bzWiKvWxyzRRdrWZvhhdMcrtogP7hLsuLD0vuOQ6CnpJ8CNh0mKxb31FeLQUGka4Ieo24fiKSLS7O9_4LMjSDmovxmpo8dYhJ1nGKhe8YPJ31gEmT4wlYAZWDW4TT76UKBdyQo_BHu_p-xNuyxwyPL9BP1VUU-umPHCzgwqabxybP6z8wjhtlJ_i-eBusadXMfD-rU_PA65y_oeZh-2C3_oo7I2UxCCxMJ67uZjwgVxtkRUA41ZoBoXNMeH7lhqJ65FpKWzPoLSMgBz2sVBUcYZlPrTahz2_qhTgCKy5SMbYzO83koWl7FqoDd9etUrTuruh_Z7TDJ-qTr-CEQm7JKf_G40)
+
 ### Installation
 
 You can download the binary directly from the [releases page](https://github.com/howhow06/tko-subs/releases) rather than building from source.
