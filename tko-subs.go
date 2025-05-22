@@ -342,7 +342,7 @@ func scanDomain(domain DomainInput, cmsRecords []*CMS, config Configuration) ([]
 
 	// Check if the DNS name has a dead Apex DNS record
 	exists, status, err := apexResolves(domain.Domain)
-	if !exists {
+	if !exists && err == nil {
 		response := "Dead Apex DNS record"
 		if status != "" {
 			response += ". Status " + status
